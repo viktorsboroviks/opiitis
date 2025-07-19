@@ -1,0 +1,31 @@
+# a clang-format style that approximates python's pep7
+#
+# based on numpy at
+# https://github.com/numpy/numpy/blob/main/.clang-format
+# and modified by varga
+BasedOnStyle: Google
+BinPackArguments: false
+BinPackParameters: false
+AccessModifierOffset: -4
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: AcrossComments
+AllowShortBlocksOnASingleLine: Empty
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+BreakBeforeBraces: Stroustrup
+BreakConstructorInitializers: AfterColon
+ColumnLimit: 79
+ContinuationIndentWidth: 8
+IndentWidth: 4
+IncludeBlocks: Regroup
+Language: Cpp
+PackConstructorInitializers: Never
+PointerAlignment: Left
+QualifierAlignment: Left
+ReferenceAlignment: Pointer
+ReflowComments: true
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+TabWidth: 4
+UseTab: Never
