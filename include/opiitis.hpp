@@ -10,29 +10,19 @@
 
 namespace opiitis {
 
-// TODO: review
 // forward declarations
 // clang-format off
 struct Settings;
-template <typename T> struct StateParams;
-template <typename T> struct State;
+template <typename T> struct Runtime;
 template <typename T> struct StateMachine;
 // clang-format on
 
-// TODO: review
 // all classes packaged as a single template parameter
 struct Context {
-    using Settings    = Settings;
-    using StateParams = StateParams<Context>;
-    using State       = State<Context>;
+    using Settings     = Settings;
+    using Runtime      = Runtime<Context>;
+    using StateMachine = StateMachine<Context>;
 };
-
-// TODO: move somewhere else
-// tools
-bool last_line_empty(const std::string &text)
-{
-    return (text.empty() || text.back() == '\n' || text.back() == '\r');
-}
 
 class Schedule {
 private:
@@ -110,13 +100,7 @@ public:
 
 struct Settings {
     // sim
-    size_t n_states = 1000;
-
-    // pools
-    size_t superpool_size  = 100;
-    size_t pool_size_min   = 10;
-    double pool_inc_coef   = 2.0;
-    double pool_kstest_min = 0.01;
+    size_t n_cycles = 1000;
 
     // progress
     size_t progress_update_period = 1;
@@ -131,16 +115,12 @@ struct Settings {
                      const std::string &key_prefix)
     {
         // clang-format off
-        n_states                = iestaade::from_json<size_t>     (config_path, key_prefix + "n_states");
-
-        superpool_size          = iestaade::from_json<size_t>     (config_path, key_prefix + "superpool_size");
-        pool_size_min           = iestaade::from_json<size_t>     (config_path, key_prefix + "pool_size_min");
-        pool_inc_coef           = iestaade::from_json<double>     (config_path, key_prefix + "pool_inc_coef");
-        pool_kstest_min         = iestaade::from_json<double>     (config_path, key_prefix + "pool_kstest_min");
+        n_cycles                = iestaade::from_json<size_t>     (config_path, key_prefix + "n_cycles");
 
         progress_update_period  = iestaade::from_json<size_t>     (config_path, key_prefix + "progress_update_period");
         log_file_name           = iestaade::from_json<std::string>(config_path, key_prefix + "log_file_name");
         stats_file_name         = iestaade::from_json<std::string>(config_path, key_prefix + "stats_file_name");
+
         rec_schedule            = Schedule(config_path, key_prefix + "rec_periods");
         // clang-format on
     }
@@ -153,22 +133,18 @@ struct Settings {
 
 template <typename T = Context>
 struct Runtime {
-    // run status
-    bool do_rec    = false;
-    size_t cycle_i = 1;
+    // status
     size_t smfg_i  = 0;
     bool smfg_done = false;
-
-    // TODO: do we need it for the base class?
-    // state
-    typename T::State state;
+    size_t cycle_i = 0;
 
     // performance
     std::chrono::time_point<std::chrono::steady_clock> start_time;
     double cycle_time_us = 0;
 
-    // history
-    std::queue<size_t> rec_states_queue;
+    // recording
+    std::queue<size_t> rec_cycles_queue;
+    bool do_rec = false;
 
     // data display and logging
     aviize::Progress progress;
@@ -193,33 +169,19 @@ struct Runtime {
            << std::endl;
         return ss.str();
     }
-};
 
-// TODO: review
-template <typename T = Context>
-struct StateParams {
-    virtual void randomize() {}
-
-    virtual void change() {}
-};
-
-// TODO: review
-template <typename T = Context>
-struct State {
-    State()
+    static std::string log_header()
     {
-        // TODO: consider removal
+        std::stringstream ss;
+        ss << "cycle_i";
+        return ss.str();
     }
 
-    explicit State(const typename T::StateParams &params)
+    std::string log_line() const
     {
-        (void)params;
-        // TODO: consider removal
-    }
-
-    virtual double get_energy()
-    {
-        return -1;
+        std::stringstream ss;
+        ss << cycle_i;
+        return ss.str();
     }
 };
 
@@ -234,7 +196,7 @@ struct StateMachine {
     // functions
     typedef std::function<void(StateMachine<T> &)> sm_function_t;
     struct SMFunctionGroup {
-        std::string name;
+        std::string name;  // cppcheck-suppress unusedStructMember
         bool repeat_until_done = false;
         std::vector<state_function_t> functions;
     }
@@ -301,186 +263,162 @@ struct StateMachine {
     }
 };
 
-// TODO: review all below
 template <typename T>
-void init_log(StateMachine<T> &sm)
+void init_log(typename T::StateMachine &sm)
 {
-    assert(!sm.log_f.is_open());
+    auto &log_f = sm.runtime.log_f;
+    assert(!log_f.is_open());
     if (sm.settings.log_file_name.empty()) {
         return;
     }
 
-    sm.log_f.open(sm.settings.log_file_name);
-    sm.log_f << "run_i,";
-    sm.log_f << "t,";
-    sm.log_f << "e";
-    sm.log_f << std::endl;
+    log_f.open(sm.settings.log_file_name);
+    log_f << sm.runtime.log_header();
+    log_f << std::endl;
 }
 
 template <typename T>
-void update_log(StateMachine<T> &sm)
+void update_log(typename T::StateMachine &sm)
 {
-    // write the log to file
+    auto &log_f = sm.runtime.log_f;
     assert(!sm.settings.log_file_name.empty());
-    if (!sm.log_f.is_open()) {
+    if (!log_f.is_open()) {
         return;
     }
 
-    sm.log_f << sm.run_i;
-    sm.log_f << "," << sm.state.get_energy();
-    sm.log_f << std::endl;
+    log_f << sm.runtime.log_line();
+    log_f << std::endl;
 }
 
 template <typename T>
-void progress_init_init_loop(StateMachine<T> &sm)
+void progress_init(typename T::StateMachine &sm)
 {
-    sm.progress.n_min         = 1;
-    sm.progress.n_max         = sm.settings.init_t_max_attempts;
-    sm.progress.update_period = sm.settings.progress_update_period;
+    sm.runtime.progress.n_min         = 1;
+    sm.runtime.progress.n_max         = sm.settings.n_cycles;
+    sm.runtime.progress.update_period = sm.settings.progress_update_period;
 }
 
 template <typename T>
-void progress_init_run_loop(StateMachine<T> &sm)
+void progress_text_reset(typename T::StateMachine &sm)
 {
-    sm.progress.n_min         = 1;
-    sm.progress.n_max         = sm.settings.n_states;
-    sm.progress.update_period = sm.settings.progress_update_period;
+    sm.runtime.progress.reset();
 }
 
 template <typename T>
-void progress_text_reset(StateMachine<T> &sm)
+void progress_text_add_nl(typename T::StateMachine &sm)
 {
-    sm.progress.reset();
+    sm.runtime.progress.text += "\n";
 }
 
 template <typename T>
-void progress_text_add_nl(StateMachine<T> &sm)
+void progress_text_add_speed(typename T::StateMachine &sm)
 {
-    sm.progress.text += "\n";
-}
-
-template <typename T>
-void progress_text_add_stats(StateMachine<T> &sm)
-{
-    const double run_s = 1 / sm.cycle_time_us * 1000000;
+    const double cycle_s = 1 / sm.runtime.cycle_time_us * 1000000;
 
     std::stringstream ss;
-    ss << " n/s " << run_s;
+    ss << " n/s " << cycle_s;
 
-    sm.progress.text += std::string(ss.str());
+    sm.runtime.progress.text += std::string(ss.str());
 }
 
 template <typename T>
-void progress_text_add_total(StateMachine<T> &sm)
+void progress_text_add_total(typename T::StateMachine &sm)
 {
-    if (!last_line_empty(sm.progress.text)) {
-        sm.progress.text += " ";
+    if (!sm.runtime.progress.last_line_empty()) {
+        sm.runtime.progress.text += " ";
     }
-    sm.progress.text += sm.progress.str_total(sm.run_i);
+    sm.runtime.progress.text += sm.runtime.progress.str_total(sm.cycle_i);
 }
 
 template <typename T>
-void progress_text_add_pct(StateMachine<T> &sm)
+void progress_text_add_pct(typename T::StateMachine &sm)
 {
-    if (!last_line_empty(sm.progress.text)) {
-        sm.progress.text += " ";
+    if (!sm.runtime.progress.last_line_empty()) {
+        sm.runtime.progress.text += " ";
     }
-    sm.progress.text += sm.progress.str_pct(sm.run_i);
+    sm.runtime.progress.text += sm.runtime.progress.str_pct(sm.cycle_i);
 }
 
 template <typename T>
-void progress_text_add_eta(StateMachine<T> &sm)
+void progress_text_add_eta(typename T::StateMachine &sm)
 {
-    if (!last_line_empty(sm.progress.text)) {
-        sm.progress.text += " ";
+    if (!sm.runtime.progress.last_line_empty()) {
+        sm.runtime.progress.text += " ";
     }
-    sm.progress.text += sm.progress.str_eta(sm.run_i);
+    sm.runtime.progress.text += sm.runtime.progress.str_eta(sm.cycle_i);
 }
 
 template <typename T>
-void progress_text_add_energy(StateMachine<T> &sm)
+void progress_print(typename T::StateMachine &sm)
 {
-    if (!last_line_empty(sm.progress.text)) {
-        sm.progress.text += " ";
-    }
-    std::ostringstream oss;
-    oss << std::scientific << std::setprecision(3) << sm.state.get_energy();
-    sm.progress.text += "e " + oss.str();
+    sm.runtime.progress.print();
 }
 
 template <typename T>
-void progress_print(StateMachine<T> &sm)
+void progress_clear_line(typename T::StateMachine &sm)
 {
-    sm.progress.print();
+    aviize::erase_line(sm.runtime.progress.text);
+    sm.runtime.progress.print();
 }
 
 template <typename T>
-void progress_clear_line(StateMachine<T> &sm)
+void print_stats(typename T::StateMachine &sm)
 {
-    aviize::erase_line(sm.progress.text);
-    sm.progress.print();
+    aviize::print(sm.runtime.stats());
 }
 
 template <typename T>
-void print_stats(StateMachine<T> &sm)
-{
-    std::stringstream ss{};
-    ss << sm.get_stats();
-    aviize::print(ss);
-}
-
-template <typename T>
-void create_stats_file(StateMachine<T> &sm)
+void create_stats_file(typename T::StateMachine &sm)
 {
     if (sm.settings.stats_file_name.empty()) {
         return;
     }
 
-    std::ofstream f(sm.settings.stats_file_name);
-    f << sm.get_stats();
+    std::ofstream stats_f(sm.settings.stats_file_name);
+    stats_f << sm.runtimeget_stats();
 }
 
 template <typename T>
-void init_rec_periods(StateMachine<T> &sm)
+void init_rec_periods(typename T::StateMachine &sm)
 {
     // record state queue holds the
     // numbers of all states that must produce a record
     // - always starts with 1
-    // - always end n_states
-    assert(sm.rec_states_queue.empty());
-    for (size_t i = 1; i <= sm.settings.n_states; i++) {
+    // - always end n_cycles
+    assert(sm.runtime.rec_cycles_queue.empty());
+    for (size_t i = 1; i <= sm.settings.n_cycles; i++) {
         if (sm.settings.rec_schedule.is_time(i)) {
-            sm.rec_states_queue.push(i);
+            sm.runtime.rec_cycles_queue.push(i);
         }
     }
 }
 
 template <typename T>
-void decide_rec(StateMachine<T> &sm)
+void decide_rec(typename T::StateMachine &sm)
 {
-    if (!sm.rec_states_queue.empty() &&
-        sm.run_i >= sm.rec_states_queue.front()) {
-        sm.rec_states_queue.pop();
-        sm.do_rec = true;
+    if (!sm.runtime.rec_cycles_queue.empty() &&
+        sm.runtime.cycle_i >= sm.runtime.rec_cycles_queue.front()) {
+        sm.runtime.rec_cycles_queue.pop();
+        sm.runtime.do_rec = true;
         return;
     }
 
-    sm.do_rec = false;
+    sm.runtime.do_rec = false;
 }
 
 template <typename T>
-void decide_run_done(StateMachine<T> &sm)
+void decide_smfg_done(typename T::StateMachine &sm)
 {
-    assert(!sm.run_done);
-    if (sm.run_i == sm.settings.n_states) {
-        sm.run_done = true;
+    assert(!sm.runtime.smfg_done);
+    if (sm.runtime.cycle_i == sm.settings.n_cycles) {
+        sm.runtime.smfg_done = true;
     }
 }
 
 template <typename T>
-void run_i_inc(StateMachine<T> &sm)
+void cycle_i_inc(typename T::StateMachine &sm)
 {
-    sm.run_i++;
+    sm.cycle_i++;
 }
 
 }  // namespace opiitis
