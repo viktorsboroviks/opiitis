@@ -14,14 +14,14 @@ namespace opiitis {
 // clang-format off
 struct Settings;
 template <typename T> struct Runtime;
-template <typename T> struct StateMachine;
+template <typename T> struct Engine;
 // clang-format on
 
 // all classes packaged as a single template parameter
 struct Context {
-    using Settings     = Settings;
-    using Runtime      = Runtime<Context>;
-    using StateMachine = StateMachine<Context>;
+    using Settings = Settings;
+    using Runtime  = Runtime<Context>;
+    using Engine   = Engine<Context>;
 };
 
 class Schedule {
@@ -133,10 +133,13 @@ struct Settings {
 
 template <typename T = Context>
 struct Runtime {
+    // settings
+    const typename T::Settings settings;
+
     // status
-    size_t smfg_i  = 0;
-    bool smfg_done = false;
-    size_t cycle_i = 0;
+    size_t engine_state_i  = 0;
+    bool engine_state_done = false;
+    size_t cycle_i         = 0;
 
     // performance
     std::chrono::time_point<std::chrono::steady_clock> start_time;
@@ -149,6 +152,11 @@ struct Runtime {
     // data display and logging
     aviize::Progress progress;
     std::ofstream log_f;
+
+    Runtime(const std::string &config_path, const std::string &key_prefix) :
+        settings(config_path, key_prefix)
+    {
+    }
 
     std::string stats() const
     {
@@ -186,36 +194,30 @@ struct Runtime {
 };
 
 template <typename T = Context>
-struct StateMachine {
-    // settings
-    const typename T::Settings settings;
-
-    // runtime
+struct Engine {
     typename T::Runtime runtime;
 
-    // functions
-    typedef std::function<void(StateMachine<T> &)> sm_function_t;
-    struct SMFunctionGroup {
+    typedef std::function<void(Runtime<T> &)> engine_fn_t;
+    struct EngineState {
         std::string name;  // cppcheck-suppress unusedStructMember
         bool repeat_until_done = false;
-        std::vector<state_function_t> functions;
-    }
+        std::vector<engine_fn_t> functions;
+    };
 
     // this vector must be filled before run()
     // e.g.:
-    // smfgs.push_back(SMFunctionGroup{"init", false, {init_rec_periods,
-    //                                                 init_log}});
-    // smfgs.push_back(SMFunctionGroup{"run", true, {decide_rec,
-    //                                               select_pool,
-    //                                               sample_params,
-    //                                               update_state,
-    //                                               rm_excess_samples}});
-    std::vector<SMFunctionGroup>
-            smfgs;
+    // engine_states.push_back(EngineState{"init", false, {init_rec_periods,
+    //                                                     init_log}});
+    // engine_states.push_back(EngineState{"run", true, {decide_rec,
+    //                                                   select_pool,
+    //                                                   sample_params,
+    //                                                   update_state,
+    //                                                   rm_excess_samples}});
+    std::vector<EngineState> engine_states;
 
-    explicit StateMachine(const std::string &config_path,
-                          const std::string &key_prefix) :
-        settings(config_path, key_prefix)
+    explicit Engine(const std::string &config_path,
+                    const std::string &key_prefix) :
+        runtime(config_path, key_prefix)
     {
     }
 
@@ -223,27 +225,28 @@ struct StateMachine {
     {
         runtime.start_time = std::chrono::steady_clock::now();
 
-        assert(!smfgs.empty());
+        assert(!engine_states.empty());
 
-        // go over all state machine function groups (smfgs)
-        // - each group can be run multiple times until smfg_done
-        // - track smfg_i to know which group is running
+        // go over all engine states
+        // - each es can be run multiple times until engine_state_done
+        // - track engine_state_i
         // - track cycle_time_us to know how long it took to run one cycle
-        //   of the smfg
-        for (runtime.smfg_i = 0; runtime.smfg_i < smfgs.size();
-             runtime.smfg_i++) {
-            const auto &smfg      = smfgs[runtime.smfg_i];
-            auto cycle_begin_time = std::chrono::steady_clock::now();
+        //   of the engine state
+        for (runtime.engine_state_i = 0;
+             runtime.engine_state_i < engine_states.size();
+             runtime.engine_state_i++) {
+            const auto &engine_state = engine_states[runtime.engine_state_i];
+            auto cycle_begin_time    = std::chrono::steady_clock::now();
 
-            runtime.smfg_done = false;
+            runtime.engine_state_done = false;
             do {
                 // go over all functions in the group
-                // - abort on smfg_done
-                for (const state_function_t &f : smfg.functions) {
-                    if (runtime.smfg_done) {
+                // - abort on engine_state_done
+                for (const engine_fn_t &f : engine_state.functions) {
+                    if (runtime.engine_state_done) {
                         break;
                     }
-                    f(*this);
+                    f(this->runtime);
                 }
 
                 // update the cycle time
@@ -255,170 +258,168 @@ struct StateMachine {
                 cycle_begin_time = cycle_end_time;
 
                 // if repeat_until_done is not set, abort
-                if (!smfg.repeat_until_done) {
+                if (!engine_state.repeat_until_done) {
                     break;
                 }
-            } while (!runtime.smfg_done);
+            } while (!runtime.engine_state_done);
         }
     }
 };
 
 template <typename T>
-void init_log(typename T::StateMachine &sm)
+void init_log(typename T::Runtime &r)
 {
-    auto &log_f = sm.runtime.log_f;
-    assert(!log_f.is_open());
-    if (sm.settings.log_file_name.empty()) {
+    assert(!r.log_f.is_open());
+    if (r.settings.log_file_name.empty()) {
         return;
     }
 
-    log_f.open(sm.settings.log_file_name);
-    log_f << sm.runtime.log_header();
-    log_f << std::endl;
+    r.log_f.open(r.settings.log_file_name);
+    r.log_f << r.log_header();
+    r.log_f << std::endl;
 }
 
 template <typename T>
-void update_log(typename T::StateMachine &sm)
+void update_log(typename T::Runtime &r)
 {
-    auto &log_f = sm.runtime.log_f;
-    assert(!sm.settings.log_file_name.empty());
-    if (!log_f.is_open()) {
+    assert(!r.settings.log_file_name.empty());
+    if (!r.log_f.is_open()) {
         return;
     }
 
-    log_f << sm.runtime.log_line();
-    log_f << std::endl;
+    r.log_f << r.log_line();
+    r.log_f << std::endl;
 }
 
 template <typename T>
-void progress_init(typename T::StateMachine &sm)
+void progress_init(typename T::Runtime &r)
 {
-    sm.runtime.progress.n_min         = 1;
-    sm.runtime.progress.n_max         = sm.settings.n_cycles;
-    sm.runtime.progress.update_period = sm.settings.progress_update_period;
+    r.progress.n_min         = 1;
+    r.progress.n_max         = r.settings.n_cycles;
+    r.progress.update_period = r.settings.progress_update_period;
 }
 
 template <typename T>
-void progress_text_reset(typename T::StateMachine &sm)
+void progress_text_reset(typename T::Runtime &r)
 {
-    sm.runtime.progress.reset();
+    r.progress.reset();
 }
 
 template <typename T>
-void progress_text_add_nl(typename T::StateMachine &sm)
+void progress_text_add_nl(typename T::Runtime &r)
 {
-    sm.runtime.progress.text += "\n";
+    r.progress.text += "\n";
 }
 
 template <typename T>
-void progress_text_add_speed(typename T::StateMachine &sm)
+void progress_text_add_speed(typename T::Runtime &r)
 {
-    const double cycle_s = 1 / sm.runtime.cycle_time_us * 1000000;
+    const double cycle_s = 1 / r.cycle_time_us * 1000000;
 
     std::stringstream ss;
     ss << " n/s " << cycle_s;
 
-    sm.runtime.progress.text += std::string(ss.str());
+    r.progress.text += std::string(ss.str());
 }
 
 template <typename T>
-void progress_text_add_total(typename T::StateMachine &sm)
+void progress_text_add_total(typename T::Runtime &r)
 {
-    if (!sm.runtime.progress.last_line_empty()) {
-        sm.runtime.progress.text += " ";
+    if (!r.progress.last_line_empty()) {
+        r.progress.text += " ";
     }
-    sm.runtime.progress.text += sm.runtime.progress.str_total(sm.cycle_i);
+    r.progress.text += r.progress.str_total(r.cycle_i);
 }
 
 template <typename T>
-void progress_text_add_pct(typename T::StateMachine &sm)
+void progress_text_add_pct(typename T::Runtime &r)
 {
-    if (!sm.runtime.progress.last_line_empty()) {
-        sm.runtime.progress.text += " ";
+    if (!r.progress.last_line_empty()) {
+        r.progress.text += " ";
     }
-    sm.runtime.progress.text += sm.runtime.progress.str_pct(sm.cycle_i);
+    r.progress.text += r.progress.str_pct(r.cycle_i);
 }
 
 template <typename T>
-void progress_text_add_eta(typename T::StateMachine &sm)
+void progress_text_add_eta(typename T::Runtime &r)
 {
-    if (!sm.runtime.progress.last_line_empty()) {
-        sm.runtime.progress.text += " ";
+    if (!r.progress.last_line_empty()) {
+        r.progress.text += " ";
     }
-    sm.runtime.progress.text += sm.runtime.progress.str_eta(sm.cycle_i);
+    r.progress.text += r.progress.str_eta(r.cycle_i);
 }
 
 template <typename T>
-void progress_print(typename T::StateMachine &sm)
+void progress_print(typename T::Runtime &r)
 {
-    sm.runtime.progress.print();
+    r.progress.print();
 }
 
 template <typename T>
-void progress_clear_line(typename T::StateMachine &sm)
+void progress_clear_line(typename T::Runtime &r)
 {
-    aviize::erase_line(sm.runtime.progress.text);
-    sm.runtime.progress.print();
+    aviize::erase_line(r.progress.text);
+    r.progress.print();
 }
 
 template <typename T>
-void print_stats(typename T::StateMachine &sm)
+void print_stats(typename T::Runtime &r)
 {
-    aviize::print(sm.runtime.stats());
+    aviize::print(r.stats());
 }
 
 template <typename T>
-void create_stats_file(typename T::StateMachine &sm)
+void create_stats_file(typename T::Runtime &r)
 {
-    if (sm.settings.stats_file_name.empty()) {
+    if (r.settings.stats_file_name.empty()) {
         return;
     }
 
-    std::ofstream stats_f(sm.settings.stats_file_name);
-    stats_f << sm.runtimeget_stats();
+    std::ofstream stats_f(r.settings.stats_file_name);
+    stats_f << r.get_stats();
 }
 
 template <typename T>
-void init_rec_periods(typename T::StateMachine &sm)
+void init_rec_periods(typename T::Runtime &r)
 {
     // record state queue holds the
     // numbers of all states that must produce a record
     // - always starts with 1
     // - always end n_cycles
-    assert(sm.runtime.rec_cycles_queue.empty());
-    for (size_t i = 1; i <= sm.settings.n_cycles; i++) {
-        if (sm.settings.rec_schedule.is_time(i)) {
-            sm.runtime.rec_cycles_queue.push(i);
+    assert(r.rec_cycles_queue.empty());
+    for (size_t i = 1; i <= r.settings.n_cycles; i++) {
+        if (r.settings.rec_schedule.is_time(i)) {
+            r.rec_cycles_queue.push(i);
         }
     }
 }
 
 template <typename T>
-void decide_rec(typename T::StateMachine &sm)
+void decide_rec(typename T::Runtime &r)
 {
-    if (!sm.runtime.rec_cycles_queue.empty() &&
-        sm.runtime.cycle_i >= sm.runtime.rec_cycles_queue.front()) {
-        sm.runtime.rec_cycles_queue.pop();
-        sm.runtime.do_rec = true;
+    if (!r.rec_cycles_queue.empty() &&
+        r.cycle_i >= r.rec_cycles_queue.front()) {
+        r.rec_cycles_queue.pop();
+        r.do_rec = true;
         return;
     }
 
-    sm.runtime.do_rec = false;
+    r.do_rec = false;
 }
 
 template <typename T>
-void decide_smfg_done(typename T::StateMachine &sm)
+void decide_engine_state_done(typename T::Runtime &r)
 {
-    assert(!sm.runtime.smfg_done);
-    if (sm.runtime.cycle_i == sm.settings.n_cycles) {
-        sm.runtime.smfg_done = true;
+    assert(!r.engine_state_done);
+    if (r.cycle_i == r.settings.n_cycles) {
+        r.engine_state_done = true;
     }
 }
 
 template <typename T>
-void cycle_i_inc(typename T::StateMachine &sm)
+void cycle_i_inc(typename T::Runtime &r)
 {
-    sm.cycle_i++;
+    r.cycle_i++;
 }
 
 }  // namespace opiitis
