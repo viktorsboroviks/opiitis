@@ -12,7 +12,7 @@ examples:
 
 aviize:
 	git clone git@github.com:viktorsboroviks/aviize.git
-	cd aviize; git checkout v2.4
+	cd aviize; git checkout v2.5
 
 iestaade:
 	git clone git@github.com:viktorsboroviks/iestaade.git

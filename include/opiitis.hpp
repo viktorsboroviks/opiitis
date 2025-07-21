@@ -197,28 +197,32 @@ template <typename T = Context>
 struct Engine {
     typename T::Runtime runtime;
 
-    typedef std::function<void(Runtime<T> &)> engine_fn_t;
+    typedef std::function<void(typename T::Runtime &)> engine_fn_t;
     struct EngineState {
         std::string name;  // cppcheck-suppress unusedStructMember
         bool repeat_until_done = false;
         std::vector<engine_fn_t> functions;
     };
 
-    // this vector must be filled before run()
-    // e.g.:
-    // engine_states.push_back(EngineState{"init", false, {init_rec_periods,
-    //                                                     init_log}});
-    // engine_states.push_back(EngineState{"run", true, {decide_rec,
-    //                                                   select_pool,
-    //                                                   sample_params,
-    //                                                   update_state,
-    //                                                   rm_excess_samples}});
+    // operate via add_state() and add_state_cyclic()
     std::vector<EngineState> engine_states;
 
     explicit Engine(const std::string &config_path,
                     const std::string &key_prefix) :
         runtime(config_path, key_prefix)
     {
+    }
+
+    void add_state(const std::string &name,
+                   const std::vector<engine_fn_t> &functions)
+    {
+        engine_states.push_back(EngineState{name, false, functions});
+    }
+
+    void add_state_cyclic(const std::string &name,
+                          const std::vector<engine_fn_t> &functions)
+    {
+        engine_states.push_back(EngineState{name, true, functions});
     }
 
     void run()
@@ -376,7 +380,7 @@ void create_stats_file(typename T::Runtime &r)
     }
 
     std::ofstream stats_f(r.settings.stats_file_name);
-    stats_f << r.get_stats();
+    stats_f << r.stats();
 }
 
 template <typename T>
@@ -408,7 +412,7 @@ void decide_rec(typename T::Runtime &r)
 }
 
 template <typename T>
-void decide_engine_state_done(typename T::Runtime &r)
+void decide_done(typename T::Runtime &r)
 {
     assert(!r.engine_state_done);
     if (r.cycle_i == r.settings.n_cycles) {
