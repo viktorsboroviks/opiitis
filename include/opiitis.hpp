@@ -104,7 +104,6 @@ struct Settings {
 
     // progress
     size_t progress_update_period = 1;
-    std::string log_file_name     = "log.csv";
     std::string stats_file_name   = "stats.txt";
 
     Schedule rec_schedule;
@@ -118,7 +117,6 @@ struct Settings {
         n_cycles                = iestaade::from_json<size_t>     (config_path, key_prefix + "n_cycles");
 
         progress_update_period  = iestaade::from_json<size_t>     (config_path, key_prefix + "progress_update_period");
-        log_file_name           = iestaade::from_json<std::string>(config_path, key_prefix + "log_file_name");
         stats_file_name         = iestaade::from_json<std::string>(config_path, key_prefix + "stats_file_name");
 
         rec_schedule            = Schedule(config_path, key_prefix + "rec_periods");
@@ -139,7 +137,7 @@ struct Runtime {
     // status
     size_t engine_state_i  = 0;
     bool engine_state_done = false;
-    size_t cycle_i         = 0;
+    size_t i_cycle         = 0;
 
     // performance
     std::chrono::time_point<std::chrono::steady_clock> start_time;
@@ -151,7 +149,6 @@ struct Runtime {
 
     // data display and logging
     aviize::Progress progress;
-    std::ofstream log_f;
 
     Runtime(const std::string &config_path, const std::string &key_prefix) :
         settings(config_path, key_prefix)
@@ -166,29 +163,15 @@ struct Runtime {
                 std::chrono::duration_cast<std::chrono::seconds>(time_now -
                                                                  start_time)
                         .count();
-        const double cycle_s         = cycle_i / runtime_s;
+        const double cycle_s         = i_cycle / runtime_s;
         const size_t first_col_width = 16;
         std::stringstream ss{};
-        ss << std::left << std::setw(first_col_width) << "cycles" << cycle_i
+        ss << std::left << std::setw(first_col_width) << "cycles" << i_cycle
            << std::endl;
         ss << std::left << std::setw(first_col_width) << "runtime"
            << aviize::seconds_to_hhmmss_string(runtime_s) << std::endl;
         ss << std::left << std::setw(first_col_width) << "cycle/s" << cycle_s
            << std::endl;
-        return ss.str();
-    }
-
-    static std::string log_header()
-    {
-        std::stringstream ss;
-        ss << "cycle_i";
-        return ss.str();
-    }
-
-    std::string log_line() const
-    {
-        std::stringstream ss;
-        ss << cycle_i;
         return ss.str();
     }
 };
@@ -271,31 +254,6 @@ struct Engine {
 };
 
 template <typename T>
-void init_log(typename T::Runtime &r)
-{
-    assert(!r.log_f.is_open());
-    if (r.settings.log_file_name.empty()) {
-        return;
-    }
-
-    r.log_f.open(r.settings.log_file_name);
-    r.log_f << r.log_header();
-    r.log_f << std::endl;
-}
-
-template <typename T>
-void update_log(typename T::Runtime &r)
-{
-    assert(!r.settings.log_file_name.empty());
-    if (!r.log_f.is_open()) {
-        return;
-    }
-
-    r.log_f << r.log_line();
-    r.log_f << std::endl;
-}
-
-template <typename T>
 void progress_init(typename T::Runtime &r)
 {
     r.progress.n_min         = 1;
@@ -332,7 +290,7 @@ void progress_text_add_total(typename T::Runtime &r)
     if (!r.progress.last_line_empty()) {
         r.progress.text += " ";
     }
-    r.progress.text += r.progress.str_total(r.cycle_i);
+    r.progress.text += r.progress.str_total(r.i_cycle);
 }
 
 template <typename T>
@@ -341,7 +299,7 @@ void progress_text_add_pct(typename T::Runtime &r)
     if (!r.progress.last_line_empty()) {
         r.progress.text += " ";
     }
-    r.progress.text += r.progress.str_pct(r.cycle_i);
+    r.progress.text += r.progress.str_pct(r.i_cycle);
 }
 
 template <typename T>
@@ -350,7 +308,7 @@ void progress_text_add_eta(typename T::Runtime &r)
     if (!r.progress.last_line_empty()) {
         r.progress.text += " ";
     }
-    r.progress.text += r.progress.str_eta(r.cycle_i);
+    r.progress.text += r.progress.str_eta(r.i_cycle);
 }
 
 template <typename T>
@@ -402,7 +360,7 @@ template <typename T>
 void decide_rec(typename T::Runtime &r)
 {
     if (!r.rec_cycles_queue.empty() &&
-        r.cycle_i >= r.rec_cycles_queue.front()) {
+        r.i_cycle >= r.rec_cycles_queue.front()) {
         r.rec_cycles_queue.pop();
         r.do_rec = true;
         return;
@@ -415,15 +373,15 @@ template <typename T>
 void decide_done(typename T::Runtime &r)
 {
     assert(!r.engine_state_done);
-    if (r.cycle_i == r.settings.n_cycles) {
+    if (r.i_cycle == r.settings.n_cycles) {
         r.engine_state_done = true;
     }
 }
 
 template <typename T>
-void cycle_i_inc(typename T::Runtime &r)
+void i_cycle_inc(typename T::Runtime &r)
 {
-    r.cycle_i++;
+    r.i_cycle++;
 }
 
 }  // namespace opiitis
